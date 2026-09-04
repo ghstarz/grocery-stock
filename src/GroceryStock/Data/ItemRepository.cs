@@ -118,6 +118,46 @@ public sealed class ItemRepository
         return Convert.ToInt32(command.ExecuteScalar());
     }
 
+    public int GetOnHand(int itemId)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COALESCE(SUM(CASE WHEN MovementType = 'In' THEN Quantity ELSE -Quantity END), 0)
+            FROM StockMovement
+            WHERE ItemId = $id;
+            """;
+        command.Parameters.AddWithValue("$id", itemId);
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    public IReadOnlyList<StockSummary> GetSummaries(bool includeInactive = true)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT i.ItemId, i.ItemCode, i.Name, i.CategoryId, c.Name,
+                   i.Unit, i.CostPriceCents, i.SalePriceCents, i.ReorderLevel,
+                   i.IsPerishable, i.IsActive,
+                   COALESCE(SUM(CASE WHEN m.MovementType = 'In' THEN m.Quantity ELSE -m.Quantity END), 0)
+            FROM StockItem i
+            INNER JOIN Category c ON c.CategoryId = i.CategoryId
+            LEFT JOIN StockMovement m ON m.ItemId = i.ItemId
+            """ + (includeInactive ? string.Empty : " WHERE i.IsActive = 1") + " GROUP BY i.ItemId ORDER BY i.Name, i.ItemCode;";
+        using var reader = command.ExecuteReader();
+        var summaries = new List<StockSummary>();
+        while (reader.Read())
+        {
+            StockItem item = reader.GetInt32(9) == 1
+                ? new PerishableItem(reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetString(5), FromCents(reader.GetInt64(6)), FromCents(reader.GetInt64(7)), reader.GetInt32(8), reader.GetInt32(10) == 1)
+                : new StandardItem(reader.GetInt32(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetString(5), FromCents(reader.GetInt64(6)), FromCents(reader.GetInt64(7)), reader.GetInt32(8), reader.GetInt32(10) == 1);
+            item.CategoryName = reader.GetString(4);
+            summaries.Add(new StockSummary(item, reader.GetInt32(11)));
+        }
+
+        return summaries;
+    }
+
     private static string SelectSql => """
         SELECT i.ItemId, i.ItemCode, i.Name, i.CategoryId, c.Name,
                i.Unit, i.CostPriceCents, i.SalePriceCents, i.ReorderLevel,
