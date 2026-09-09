@@ -7,16 +7,18 @@ public sealed class InventoryService
 {
     private readonly ItemRepository items;
     private readonly LookupRepository lookups;
+    private readonly MovementRepository movements;
 
     public InventoryService(Database database)
-        : this(new ItemRepository(database), new LookupRepository(database))
+        : this(new ItemRepository(database), new LookupRepository(database), new MovementRepository(database))
     {
     }
 
-    public InventoryService(ItemRepository items, LookupRepository lookups)
+    public InventoryService(ItemRepository items, LookupRepository lookups, MovementRepository movements)
     {
         this.items = items;
         this.lookups = lookups;
+        this.movements = movements;
     }
 
     public IReadOnlyList<Category> GetCategories() => lookups.GetCategories();
@@ -24,6 +26,29 @@ public sealed class InventoryService
     public IReadOnlyList<Supplier> GetSuppliers() => lookups.GetSuppliers();
 
     public Supplier GetOrCreateSupplier(string name) => lookups.GetOrCreateSupplier(name);
+
+    public IReadOnlyList<BatchBalance> GetBatchBalances(int itemId) => movements.GetBatchBalances(itemId);
+
+    public IReadOnlyList<StockMovement> GetMovements(int itemId) => movements.GetMovements(itemId);
+
+    public StockMovement ReceiveStock(
+        int itemId,
+        int quantity,
+        decimal unitCost,
+        int supplierId,
+        DateTime movementDate,
+        string recordedBy,
+        string? batchCode,
+        DateOnly? expiryDate)
+    {
+        var item = items.GetById(itemId) ?? throw new InventoryValidationException("The item could not be found.");
+        if (!item.IsActive)
+        {
+            throw new InventoryValidationException("Retired items cannot receive stock.");
+        }
+
+        return movements.ReceiveStock(itemId, quantity, unitCost, supplierId, movementDate, recordedBy, batchCode, expiryDate);
+    }
 
     public StockItem AddItem(
         string itemCode,
