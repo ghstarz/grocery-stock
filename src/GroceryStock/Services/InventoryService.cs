@@ -50,6 +50,23 @@ public sealed class InventoryService
         return movements.ReceiveStock(itemId, quantity, unitCost, supplierId, movementDate, recordedBy, batchCode, expiryDate);
     }
 
+    public StockMovement StockOut(
+        int itemId,
+        int quantity,
+        StockOutReason reason,
+        int? batchId,
+        DateTime movementDate,
+        string recordedBy)
+    {
+        var item = items.GetById(itemId) ?? throw new InventoryValidationException("The item could not be found.");
+        if (!item.IsActive)
+        {
+            throw new InventoryValidationException("Retired items cannot issue stock.");
+        }
+
+        return movements.RecordStockOut(itemId, quantity, reason, batchId, movementDate, recordedBy);
+    }
+
     public StockItem AddItem(
         string itemCode,
         string name,

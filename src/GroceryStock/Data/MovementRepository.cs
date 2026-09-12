@@ -161,6 +161,97 @@ public sealed class MovementRepository
         return movements;
     }
 
+    public StockMovement RecordStockOut(
+        int itemId,
+        int quantity,
+        StockOutReason reason,
+        int? batchId,
+        DateTime movementDate,
+        string recordedBy)
+    {
+        StockItem.RequirePositive(quantity, nameof(quantity));
+        StockItem.RequireText(recordedBy, nameof(recordedBy));
+
+        using var connection = database.OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        try
+        {
+            var itemInfo = ReadItemInfo(connection, transaction, itemId);
+            if (!itemInfo.IsActive)
+            {
+                throw new InventoryValidationException("Retired items cannot issue stock.");
+            }
+
+            if (itemInfo.RequiresBatch && batchId is null)
+            {
+                throw new InventoryValidationException("Select a batch for a perishable stock out.");
+            }
+
+            if (!itemInfo.RequiresBatch && batchId.HasValue)
+            {
+                throw new InventoryValidationException("Standard items do not use batches.");
+            }
+
+            DateOnly? expiryDate = null;
+            if (batchId.HasValue)
+            {
+                expiryDate = ReadBatchExpiry(connection, transaction, itemId, batchId.Value);
+                if (expiryDate is null)
+                {
+                    throw new InventoryValidationException("The selected batch does not belong to this item.");
+                }
+
+                if (reason == StockOutReason.Sale && expiryDate.Value < DateOnly.FromDateTime(DateTime.Today))
+                {
+                    throw new InventoryValidationException("An expired batch cannot be sold. Record an expiry write-off instead.");
+                }
+
+                var batchBalance = ReadBatchBalance(connection, transaction, itemId, batchId.Value);
+                if (batchBalance < quantity)
+                {
+                    throw new InventoryValidationException("The selected batch does not have enough stock.");
+                }
+            }
+
+            var itemBalance = ReadItemBalance(connection, transaction, itemId);
+            if (itemBalance < quantity)
+            {
+                throw new InventoryValidationException("The stock out would make the item balance negative.");
+            }
+
+            using var movementCommand = connection.CreateCommand();
+            movementCommand.Transaction = transaction;
+            movementCommand.CommandText = """
+                INSERT INTO StockMovement
+                    (ItemId, BatchId, MovementType, Reason, Quantity, UnitCostCents, MovementDate, SupplierId, RecordedBy)
+                SELECT $itemId, $batchId, 'Out', $reason, $quantity, CostPriceCents, $movementDate, NULL, $recordedBy
+                FROM StockItem
+                WHERE ItemId = $itemId;
+                SELECT last_insert_rowid();
+                """;
+            movementCommand.Parameters.AddWithValue("$itemId", itemId);
+            movementCommand.Parameters.AddWithValue("$batchId", (object?)batchId ?? DBNull.Value);
+            movementCommand.Parameters.AddWithValue("$reason", reason.ToString());
+            movementCommand.Parameters.AddWithValue("$quantity", quantity);
+            movementCommand.Parameters.AddWithValue("$movementDate", FormatDateTime(movementDate));
+            movementCommand.Parameters.AddWithValue("$recordedBy", recordedBy.Trim());
+            var movementId = Convert.ToInt32(movementCommand.ExecuteScalar());
+            transaction.Commit();
+            var cost = ReadItemCost(connection, itemId);
+            return new StockMovement(movementId, itemId, batchId, MovementType.Out, quantity, cost, movementDate, reason.ToString(), null, recordedBy);
+        }
+        catch (InventoryValidationException)
+        {
+            transaction.Rollback();
+            throw;
+        }
+        catch (SqliteException ex)
+        {
+            transaction.Rollback();
+            throw new InventoryValidationException("The stock out could not be saved, so no stock was changed.", ex);
+        }
+    }
+
     private static int? FindOrCreateBatch(SqliteConnection connection, SqliteTransaction transaction, int itemId, string batchCode, DateOnly expiryDate)
     {
         using (var find = connection.CreateCommand())
@@ -208,6 +299,46 @@ public sealed class MovementRepository
         }
 
         return (reader.GetInt32(0) == 1, reader.GetInt32(1) == 1);
+    }
+
+    private static DateOnly? ReadBatchExpiry(SqliteConnection connection, SqliteTransaction transaction, int itemId, int batchId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT ExpiryDate FROM Batch WHERE BatchId = $batchId AND ItemId = $itemId;";
+        command.Parameters.AddWithValue("$batchId", batchId);
+        command.Parameters.AddWithValue("$itemId", itemId);
+        var value = command.ExecuteScalar();
+        return value is null || value is DBNull
+            ? null
+            : DateOnly.ParseExact((string)value, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private static int ReadBatchBalance(SqliteConnection connection, SqliteTransaction transaction, int itemId, int batchId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = BalanceSql + " WHERE ItemId = $itemId AND BatchId = $batchId;";
+        command.Parameters.AddWithValue("$itemId", itemId);
+        command.Parameters.AddWithValue("$batchId", batchId);
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private static int ReadItemBalance(SqliteConnection connection, SqliteTransaction transaction, int itemId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = BalanceSql + " WHERE ItemId = $itemId;";
+        command.Parameters.AddWithValue("$itemId", itemId);
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private decimal ReadItemCost(SqliteConnection connection, int itemId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT CostPriceCents FROM StockItem WHERE ItemId = $id;";
+        command.Parameters.AddWithValue("$id", itemId);
+        return ItemRepository.FromCents(Convert.ToInt64(command.ExecuteScalar()));
     }
 
     private static string FormatDateTime(DateTime value) => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
