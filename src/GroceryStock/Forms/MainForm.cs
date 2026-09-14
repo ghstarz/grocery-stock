@@ -85,6 +85,7 @@ public sealed class MainForm : Form
         catalogueGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         catalogueGrid.RowHeadersVisible = false;
         catalogueGrid.SelectionChanged += (_, _) => UpdateActionButtons();
+        catalogueGrid.CellFormatting += CatalogueGridCellFormatting;
         AddColumn("Code", "ItemCode");
         AddColumn("Name", "Name");
         AddColumn("Category", "CategoryName");
@@ -239,6 +240,18 @@ public sealed class MainForm : Form
         retireButton.Enabled = item?.IsActive == true;
         receiveButton.Enabled = item?.IsActive == true;
         stockOutButton.Enabled = item?.IsActive == true;
+    }
+
+    private void CatalogueGridCellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
+    {
+        if (e.RowIndex < 0 || catalogueGrid.Rows[e.RowIndex].DataBoundItem is not CatalogueRow row)
+        {
+            return;
+        }
+
+        catalogueGrid.Rows[e.RowIndex].DefaultCellStyle.BackColor = row.Summary.IsLowStock
+            ? Color.LightGoldenrodYellow
+            : Color.White;
     }
 
     private void AddColumn(string header, string propertyName)
