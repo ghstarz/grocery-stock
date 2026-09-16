@@ -47,6 +47,17 @@ public sealed class InventoryService
             throw new InventoryValidationException("Retired items cannot receive stock.");
         }
 
+        var hasBatchDetails = !string.IsNullOrWhiteSpace(batchCode) || expiryDate.HasValue;
+        if (item.RequiresBatch && (string.IsNullOrWhiteSpace(batchCode) || !expiryDate.HasValue))
+        {
+            throw new InventoryValidationException("A perishable delivery needs a batch code and expiry date.");
+        }
+
+        if (!item.RequiresBatch && hasBatchDetails)
+        {
+            throw new InventoryValidationException("Standard items cannot receive batch details.");
+        }
+
         return movements.ReceiveStock(itemId, quantity, unitCost, supplierId, movementDate, recordedBy, batchCode, expiryDate);
     }
 
@@ -62,6 +73,11 @@ public sealed class InventoryService
         if (!item.IsActive)
         {
             throw new InventoryValidationException("Retired items cannot issue stock.");
+        }
+
+        if (!Enum.IsDefined(reason))
+        {
+            throw new InventoryValidationException("Select a valid stock-out reason.");
         }
 
         return movements.RecordStockOut(itemId, quantity, reason, batchId, movementDate, recordedBy);

@@ -39,6 +39,25 @@ public sealed class InventoryTests
     }
 
     [Fact]
+    public void Receipt_validation_uses_the_item_hierarchy_for_standard_and_perishable_items()
+    {
+        using var fixture = new DatabaseFixture();
+        fixture.Database.Initialize();
+        var service = new InventoryService(fixture.Database);
+        StockItem standard = service.AddItem("RICE001", "Rice", 1, "bag", 1.00m, 2.00m, 5, false);
+        StockItem perishable = service.AddItem("MILK001", "Milk", 2, "bottle", 1.00m, 2.00m, 3, true);
+        var supplier = service.GetOrCreateSupplier("Example Foods");
+        var expiry = DateOnly.FromDateTime(DateTime.Today.AddDays(5));
+
+        Assert.False(standard.RequiresBatch);
+        Assert.True(perishable.RequiresBatch);
+        Assert.Throws<InventoryValidationException>(() => service.ReceiveStock(standard.ItemId, 2, 1.00m, supplier.SupplierId, DateTime.Today, "Tester", "NOT-USED", expiry));
+        service.ReceiveStock(perishable.ItemId, 2, 1.00m, supplier.SupplierId, DateTime.Today, "Tester", "BATCH-A", expiry);
+
+        Assert.Equal(2, new MovementRepository(fixture.Database).GetItemBalance(perishable.ItemId));
+    }
+
+    [Fact]
     public void Reusing_batch_code_requires_the_same_expiry_date()
     {
         using var fixture = new DatabaseFixture();
@@ -163,6 +182,38 @@ public sealed class InventoryTests
 
         Assert.Throws<InventoryValidationException>(() => service.StockOut(item.ItemId, 2, StockOutReason.Breakage, null, DateTime.Today, "Tester"));
         Assert.Equal(5, new MovementRepository(fixture.Database).GetItemBalance(item.ItemId));
+    }
+
+    [Fact]
+    public void Invalid_stock_out_reason_is_rejected_without_a_movement()
+    {
+        using var fixture = new DatabaseFixture();
+        fixture.Database.Initialize();
+        var service = new InventoryService(fixture.Database);
+        var item = service.AddItem("RICE001", "Rice", 1, "bag", 1.00m, 2.00m, 5, false);
+        var supplier = service.GetOrCreateSupplier("Example Foods");
+        service.ReceiveStock(item.ItemId, 5, 1.00m, supplier.SupplierId, DateTime.Today, "Tester", null, null);
+
+        Assert.Throws<InventoryValidationException>(() => service.StockOut(item.ItemId, 1, (StockOutReason)99, null, DateTime.Today, "Tester"));
+
+        Assert.Single(service.GetMovements(item.ItemId));
+        Assert.Equal(5, new MovementRepository(fixture.Database).GetItemBalance(item.ItemId));
+    }
+
+    [Fact]
+    public void Supplier_directory_entry_survives_a_failed_delivery_without_partial_stock()
+    {
+        using var fixture = new DatabaseFixture();
+        fixture.Database.Initialize();
+        var service = new InventoryService(fixture.Database);
+        var item = service.AddItem("MILK001", "Milk", 2, "bottle", 1.00m, 2.00m, 3, true);
+        var supplier = service.GetOrCreateSupplier("New Supplier");
+
+        Assert.Throws<InventoryValidationException>(() => service.ReceiveStock(item.ItemId, 2, 1.00m, supplier.SupplierId, DateTime.Today, "Tester", null, null));
+
+        Assert.Contains(service.GetSuppliers(), entry => entry.SupplierId == supplier.SupplierId && entry.Name == "New Supplier");
+        Assert.Empty(service.GetBatchBalances(item.ItemId));
+        Assert.Empty(service.GetMovements(item.ItemId));
     }
 
     private static int InsertBatchWithMovement(Database database, int itemId, string code, DateOnly expiryDate, int quantity)

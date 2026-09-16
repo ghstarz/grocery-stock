@@ -171,6 +171,10 @@ public sealed class MovementRepository
     {
         StockItem.RequirePositive(quantity, nameof(quantity));
         StockItem.RequireText(recordedBy, nameof(recordedBy));
+        if (!Enum.IsDefined(reason))
+        {
+            throw new InventoryValidationException("Select a valid stock-out reason.");
+        }
 
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction();
@@ -236,9 +240,9 @@ public sealed class MovementRepository
             movementCommand.Parameters.AddWithValue("$movementDate", FormatDateTime(movementDate));
             movementCommand.Parameters.AddWithValue("$recordedBy", recordedBy.Trim());
             var movementId = Convert.ToInt32(movementCommand.ExecuteScalar());
+            var movement = new StockMovement(movementId, itemId, batchId, MovementType.Out, quantity, itemInfo.Cost, movementDate, reason.ToString(), null, recordedBy);
             transaction.Commit();
-            var cost = ReadItemCost(connection, itemId);
-            return new StockMovement(movementId, itemId, batchId, MovementType.Out, quantity, cost, movementDate, reason.ToString(), null, recordedBy);
+            return movement;
         }
         catch (InventoryValidationException)
         {
@@ -286,11 +290,11 @@ public sealed class MovementRepository
         return Convert.ToInt32(insert.ExecuteScalar());
     }
 
-    private static (bool RequiresBatch, bool IsActive) ReadItemInfo(SqliteConnection connection, SqliteTransaction transaction, int itemId)
+    private static (bool RequiresBatch, bool IsActive, decimal Cost) ReadItemInfo(SqliteConnection connection, SqliteTransaction transaction, int itemId)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT IsPerishable, IsActive FROM StockItem WHERE ItemId = $id;";
+        command.CommandText = "SELECT IsPerishable, IsActive, CostPriceCents FROM StockItem WHERE ItemId = $id;";
         command.Parameters.AddWithValue("$id", itemId);
         using var reader = command.ExecuteReader();
         if (!reader.Read())
@@ -298,7 +302,7 @@ public sealed class MovementRepository
             throw new InventoryValidationException("The item could not be found.");
         }
 
-        return (reader.GetInt32(0) == 1, reader.GetInt32(1) == 1);
+        return (reader.GetInt32(0) == 1, reader.GetInt32(1) == 1, ItemRepository.FromCents(reader.GetInt64(2)));
     }
 
     private static DateOnly? ReadBatchExpiry(SqliteConnection connection, SqliteTransaction transaction, int itemId, int batchId)
@@ -331,14 +335,6 @@ public sealed class MovementRepository
         command.CommandText = BalanceSql + " WHERE ItemId = $itemId;";
         command.Parameters.AddWithValue("$itemId", itemId);
         return Convert.ToInt32(command.ExecuteScalar());
-    }
-
-    private decimal ReadItemCost(SqliteConnection connection, int itemId)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT CostPriceCents FROM StockItem WHERE ItemId = $id;";
-        command.Parameters.AddWithValue("$id", itemId);
-        return ItemRepository.FromCents(Convert.ToInt64(command.ExecuteScalar()));
     }
 
     private static string FormatDateTime(DateTime value) => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);

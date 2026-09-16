@@ -24,3 +24,5 @@ dotnet test tests/GroceryStock.Tests/GroceryStock.Tests.csproj
 ```
 
 The checkpoint includes catalogue add/edit/retire, name/code search, category and status filters, numeric quantity sorting, supplier-linked receiving, perishable batches, stock-out reasons with balance checks, and low-stock visibility. Quantities are whole units; the application does not support fractional bulk weights. Dedicated expiry monitoring, category valuation reports, and CSV export are later work.
+
+Supplier names entered in the receive form are saved to the supplier directory before delivery validation; a failed delivery therefore leaves the supplier entry but never leaves a partial batch or movement.

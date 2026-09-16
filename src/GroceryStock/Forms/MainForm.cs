@@ -33,12 +33,28 @@ public sealed class MainForm : Form
 
     private void BuildLayout()
     {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         var filters = new FlowLayoutPanel
         {
-            Dock = DockStyle.Top,
+            Dock = DockStyle.Fill,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(8),
-            WrapContents = false
+            Margin = Padding.Empty,
+            WrapContents = true
         };
         filters.Controls.Add(new Label { Text = "Search", AutoSize = true, Margin = new Padding(4, 8, 4, 0) });
         searchText.Width = 180;
@@ -73,7 +89,7 @@ public sealed class MainForm : Form
         sortFilter.SelectedIndex = 0;
         sortFilter.SelectedIndexChanged += (_, _) => RefreshCatalogue();
         filters.Controls.Add(sortFilter);
-        Controls.Add(filters);
+        root.Controls.Add(filters, 0, 0);
 
         catalogueGrid.Dock = DockStyle.Fill;
         catalogueGrid.AutoGenerateColumns = false;
@@ -100,20 +116,22 @@ public sealed class MainForm : Form
         {
             idColumn.Visible = false;
         }
-        Controls.Add(catalogueGrid);
+        root.Controls.Add(catalogueGrid, 0, 1);
 
-        emptyLabel.Dock = DockStyle.Bottom;
+        emptyLabel.Dock = DockStyle.Fill;
         emptyLabel.Height = 34;
+        emptyLabel.Margin = Padding.Empty;
         emptyLabel.Text = "No catalogue items match the current filters.";
         emptyLabel.TextAlign = ContentAlignment.MiddleCenter;
         emptyLabel.Visible = false;
-        Controls.Add(emptyLabel);
+        root.Controls.Add(emptyLabel, 0, 2);
 
         var actions = new FlowLayoutPanel
         {
-            Dock = DockStyle.Bottom,
+            Dock = DockStyle.Fill,
             AutoSize = true,
             Padding = new Padding(8),
+            Margin = Padding.Empty,
             WrapContents = false
         };
         var addButton = MakeButton("Add item", (_, _) => AddItem());
@@ -130,7 +148,8 @@ public sealed class MainForm : Form
         stockOutButton.AutoSize = true;
         stockOutButton.Click += (_, _) => StockOut();
         actions.Controls.AddRange(new Control[] { addButton, editButton, retireButton, receiveButton, stockOutButton });
-        Controls.Add(actions);
+        root.Controls.Add(actions, 0, 3);
+        Controls.Add(root);
     }
 
     private void LoadLookups()
