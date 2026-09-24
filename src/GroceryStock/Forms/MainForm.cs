@@ -6,6 +6,8 @@ namespace GroceryStock.Forms;
 public sealed class MainForm : Form
 {
     private readonly InventoryService service;
+    private readonly ReportService reportService;
+    private readonly StockCsvExporter csvExporter = new();
     private readonly DataGridView catalogueGrid = new();
     private readonly TextBox searchText = new();
     private readonly ComboBox categoryFilter = new();
@@ -18,17 +20,30 @@ public sealed class MainForm : Form
     private readonly Button receiveButton = new();
     private readonly Button stockOutButton = new();
     private readonly BindingSource bindingSource = new();
+    private IReadOnlyList<StockSummary> visibleSummaries = Array.Empty<StockSummary>();
+    private bool initializingFilters = true;
 
-    public MainForm(InventoryService service)
+    public MainForm(InventoryService service, ReportService reportService)
     {
         this.service = service;
+        this.reportService = reportService;
         Text = "Grocery Stock";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(900, 560);
         ClientSize = new Size(1160, 700);
         BuildLayout();
-        LoadLookups();
-        RefreshCatalogue();
+        try
+        {
+            LoadLookups();
+            initializingFilters = false;
+            RefreshCatalogue();
+        }
+        catch (Exception exception) when (FormErrorMessages.IsStorageFailure(exception))
+        {
+            initializingFilters = false;
+            emptyLabel.Text = FormErrorMessages.StorageFailure("The stock catalogue could not be loaded", exception);
+            emptyLabel.Visible = true;
+        }
     }
 
     private void BuildLayout()
@@ -65,7 +80,10 @@ public sealed class MainForm : Form
         filters.Controls.Add(new Label { Text = "Category", AutoSize = true, Margin = new Padding(12, 8, 4, 0) });
         categoryFilter.Width = 140;
         categoryFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-        categoryFilter.SelectedIndexChanged += (_, _) => RefreshCatalogue();
+        categoryFilter.SelectedIndexChanged += (_, _) =>
+        {
+            if (!initializingFilters) RefreshCatalogue();
+        };
         filters.Controls.Add(categoryFilter);
 
         filters.Controls.Add(new Label { Text = "Status", AutoSize = true, Margin = new Padding(12, 8, 4, 0) });
@@ -148,6 +166,8 @@ public sealed class MainForm : Form
         stockOutButton.AutoSize = true;
         stockOutButton.Click += (_, _) => StockOut();
         actions.Controls.AddRange(new Control[] { addButton, editButton, retireButton, receiveButton, stockOutButton });
+        actions.Controls.Add(MakeButton("Reports", (_, _) => OpenReports()));
+        actions.Controls.Add(MakeButton("Export CSV", (_, _) => ExportCsv()));
         root.Controls.Add(actions, 0, 3);
         Controls.Add(root);
     }
@@ -175,18 +195,29 @@ public sealed class MainForm : Form
         };
         var category = categoryFilter.SelectedItem as CategoryChoice;
         var sortIndex = sortFilter.SelectedIndex;
-        var rows = service.SearchCatalogue(
-            searchText.Text,
-            category?.CategoryId,
-            status,
-            lowStockFilter.Checked,
-            sortIndex > 0,
-            sortIndex == 2);
+        try
+        {
+            var rows = service.SearchCatalogue(
+                searchText.Text,
+                category?.CategoryId,
+                status,
+                lowStockFilter.Checked,
+                sortIndex > 0,
+                sortIndex == 2);
 
-        bindingSource.DataSource = rows.Select(summary => new CatalogueRow(summary)).ToList();
-        catalogueGrid.DataSource = bindingSource;
-        emptyLabel.Visible = rows.Count == 0;
-        UpdateActionButtons();
+            visibleSummaries = rows;
+            bindingSource.DataSource = rows.Select(summary => new CatalogueRow(summary)).ToList();
+            catalogueGrid.DataSource = bindingSource;
+            emptyLabel.Text = "No catalogue items match the current filters.";
+            emptyLabel.Visible = rows.Count == 0;
+            UpdateActionButtons();
+        }
+        catch (Exception exception) when (FormErrorMessages.IsStorageFailure(exception))
+        {
+            visibleSummaries = Array.Empty<StockSummary>();
+            emptyLabel.Text = FormErrorMessages.StorageFailure("The stock catalogue could not be loaded", exception);
+            emptyLabel.Visible = true;
+        }
     }
 
     private void AddItem()
@@ -222,16 +253,27 @@ public sealed class MainForm : Form
         {
             MessageBox.Show(this, ex.Message, "Cannot retire item", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        catch (Exception ex) when (FormErrorMessages.IsStorageFailure(ex))
+        {
+            FormErrorMessages.ShowStorageFailure(this, "The item could not be retired", ex);
+        }
     }
 
     private void ReceiveStock()
     {
         var item = SelectedItem();
         if (item is null) return;
-        using var form = new ReceiveStockForm(service, item);
-        if (form.ShowDialog(this) == DialogResult.OK)
+        try
         {
-            RefreshCatalogue();
+            using var form = new ReceiveStockForm(service, item);
+            if (form.ShowDialog(this) == DialogResult.OK)
+            {
+                RefreshCatalogue();
+            }
+        }
+        catch (Exception exception) when (FormErrorMessages.IsStorageFailure(exception))
+        {
+            FormErrorMessages.ShowStorageFailure(this, "The delivery form could not load supplier data", exception);
         }
     }
 
@@ -239,10 +281,50 @@ public sealed class MainForm : Form
     {
         var item = SelectedItem();
         if (item is null) return;
-        using var form = new StockOutForm(service, item);
-        if (form.ShowDialog(this) == DialogResult.OK)
+        try
         {
-            RefreshCatalogue();
+            using var form = new StockOutForm(service, item);
+            if (form.ShowDialog(this) == DialogResult.OK)
+            {
+                RefreshCatalogue();
+            }
+        }
+        catch (Exception exception) when (FormErrorMessages.IsStorageFailure(exception))
+        {
+            FormErrorMessages.ShowStorageFailure(this, "The stock-out form could not load batch data", exception);
+        }
+    }
+
+    private void OpenReports()
+    {
+        using var form = new ReportsForm(reportService);
+        form.ShowDialog(this);
+    }
+
+    private void ExportCsv()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            DefaultExt = "csv",
+            FileName = "grocery-stock.csv",
+            Filter = "CSV files (*.csv)|*.csv",
+            OverwritePrompt = true,
+            Title = "Export displayed stock rows"
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            csvExporter.Export(dialog.FileName, visibleSummaries);
+            MessageBox.Show(this, "The displayed stock rows were exported as UTF-8 CSV.", "Export complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            FormErrorMessages.ShowStorageFailure(this, "The CSV file could not be written", exception);
         }
     }
 
